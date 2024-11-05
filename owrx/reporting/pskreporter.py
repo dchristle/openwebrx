@@ -88,7 +88,7 @@ class PskReporter(FilteredReporter):
 
 
 class Uploader(object):
-    receieverDelimiter = [0x99, 0x92]
+    receiverDelimiter = [0x99, 0x92]
     senderDelimiter = [0x99, 0x93]
 
     def __init__(self):
@@ -105,27 +105,34 @@ class Uploader(object):
         # filter out any erroneous encodes
         encoded = [e for e in encoded if e is not None]
 
-        def chunks(block, max_size):
-            size = 0
-            current = []
-            for r in block:
-                if size + len(r) > max_size:
-                    yield current
-                    current = []
-                    size = 0
-                size += len(r)
-                current.append(r)
-            yield current
-
         rHeader = self.getReceiverInformationHeader()
         rInfo = self.getReceiverInformation()
         sHeader = self.getSenderInformationHeader()
+        fixed_overhead = 16 + len(rHeader) + len(sHeader) + len(rInfo)
+
+        def chunks(block, max_total_size):
+            current = []
+            current_spots_size = 0
+            for r in block:
+                # Calculate size if we added this spot
+                spots_size = current_spots_size + len(r)
+                fixed_with_spots_size = fixed_overhead + 4 + spots_size
+                padded_size = fixed_with_spots_size + ((-fixed_with_spots_size) & 3)  # alignment to nearest 4-byte
+
+                if padded_size > max_total_size:
+                    yield current
+                    current = []
+
+                current.append(r)
+                current_spots_size += len(r)
+            if current:
+                yield current
 
         packets = []
-        # 1200 bytes of sender data should keep the packet size below MTU for most cases
-        for chunk in chunks(encoded, 1200):
+        # Limit of 1190 bytes should be below most MTUs
+        for chunk in chunks(encoded, 1190):
             sInfo = self.getSenderInformation(chunk)
-            length = 16 + len(rHeader) + len(sHeader) + len(rInfo) + len(sInfo)
+            length = fixed_overhead + len(sInfo)
             header = self.getHeader(length)
             packets.append(header + rHeader + sHeader + rInfo + sInfo)
             self.sequence = (self.sequence + len(chunk)) % (1 << 32)
@@ -171,7 +178,7 @@ class Uploader(object):
             [0x00, 0x03]
             # length
             + list(length.to_bytes(2, "big"))
-            + Uploader.receieverDelimiter
+            + Uploader.receiverDelimiter
             # number of fields
             + list(num_fields.to_bytes(2, "big"))
             # padding
@@ -202,7 +209,7 @@ class Uploader(object):
             bodyFields += [pm["pskreporter_antenna_information"]]
         body = [b for s in bodyFields for b in self.encodeString(s)]
         body = self.pad(body, 4)
-        body = bytes(Uploader.receieverDelimiter + list((len(body) + 4).to_bytes(2, "big")) + body)
+        body = bytes(Uploader.receiverDelimiter + list((len(body) + 4).to_bytes(2, "big")) + body)
         return body
 
     def getSenderInformationHeader(self):
